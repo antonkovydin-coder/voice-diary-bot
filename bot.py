@@ -5,6 +5,7 @@ import time
 from flask import Flask, request
 import edge_tts
 import asyncio
+from pydub import AudioSegment  # Добавляем библиотеку для конвертации
 
 # =============================================
 # 1. ВСТАВЬТЕ СВОИ КЛЮЧИ (ОБЯЗАТЕЛЬНО!)
@@ -80,8 +81,8 @@ def analyze_text(user_text):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Мысль пользователя: {user_text}"}
         ],
-        "temperature": 0.95,  # Высокая креативность для живого общения
-        "max_tokens": 150    # Чуть больше для прощалочки
+        "temperature": 0.95,
+        "max_tokens": 150
     }
     
     try:
@@ -99,12 +100,17 @@ def analyze_text(user_text):
     except Exception as e:
         return f"Ошибка при запросе к Groq: {str(e)}"
 
-# --- Функция 3: текст -> голос (женский, улучшенное качество) ---
+# --- Функция 3: текст -> голос (высокое качество) ---
 async def text_to_voice(text):
-    voice = "ru-RU-SvetlanaNeural"  # Женский голос
-    # Используем более высокое качество (48 кГц, 96 кбит/с)
+    voice = "ru-RU-SvetlanaNeural"
     communicate = edge_tts.Communicate(text, voice)
-    await communicate.save("response.mp3", audio_format="audio-24khz-96kbitrate-mono-mp3")
+    await communicate.save("response_original.mp3")  # Сохраняем оригинал
+    
+    # Конвертируем в более высокий битрейт (192 кбит/с)
+    audio = AudioSegment.from_mp3("response_original.mp3")
+    audio.export("response.mp3", format="mp3", bitrate="192k")
+    
+    os.remove("response_original.mp3")  # Удаляем временный файл
     return "response.mp3"
 
 # --- Функция 4: отправка текстового сообщения в Telegram ---
@@ -167,7 +173,7 @@ def webhook():
             send_message(chat_id, f"⚠️ Ошибка: {str(e)}")
         
         finally:
-            for f in ["user_voice.ogg", "response.mp3"]:
+            for f in ["user_voice.ogg", "response_original.mp3", "response.mp3"]:
                 if os.path.exists(f):
                     os.remove(f)
     
