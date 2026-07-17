@@ -10,7 +10,7 @@ import asyncio
 # 1. ВСТАВЬТЕ СВОИ КЛЮЧИ (ОБЯЗАТЕЛЬНО!)
 # =============================================
 TELEGRAM_TOKEN = "8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI"   # Например: "123456:ABC-DEF"
-GROQ_API_KEY = "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. - 2"             # Например: "gsk_abc123..."
+GROQ_API_KEY = "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"             # Например: "gsk_abc123..."
 # =============================================
 
 app = Flask(__name__)
