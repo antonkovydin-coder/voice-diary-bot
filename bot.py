@@ -9,8 +9,8 @@ import asyncio
 # =============================================
 # 1. ВСТАВЬТЕ СВОИ КЛЮЧИ (ОБЯЗАТЕЛЬНО!)
 # =============================================
-TELEGRAM_TOKEN = "8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI"   # Ваш токен от @BotFather
-GROQ_API_KEY = "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"             # Ваш ключ Groq (без лишних пробелов!)
+TELEGRAM_TOKEN = "8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI"   # Например: "123456:ABC-DEF"
+GROQ_API_KEY = "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. - 2"             # Например: "gsk_abc123..."
 # =============================================
 
 app = Flask(__name__)
@@ -22,9 +22,14 @@ def transcribe_audio(file_path):
     with open(file_path, "rb") as f:
         files = {"file": f}
         data = {"model": "whisper-large-v3", "language": "ru"}
-        response = requests.post(url, headers=headers, files=files, data=data)
-    result = response.json()
-    return result.get("text", "")
+        try:
+            response = requests.post(url, headers=headers, files=files, data=data)
+            result = response.json()
+            if "error" in result:
+                return f"Ошибка распознавания: {result['error'].get('message', 'Неизвестная ошибка')}"
+            return result.get("text", "Речь не распознана")
+        except Exception as e:
+            return f"Ошибка при запросе к Whisper: {str(e)}"
 
 # --- Функция 2: анализ через 3 роли (Llama 3 через Groq) ---
 def analyze_text(user_text):
@@ -53,9 +58,23 @@ def analyze_text(user_text):
         "temperature": 0.8,
         "max_tokens": 1000
     }
-    response = requests.post(url, headers=headers, json=payload)
-    data = response.json()
-    return data["choices"][0]["message"]["content"]
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        data = response.json()
+        
+        # Проверяем, есть ли ошибка в ответе
+        if "error" in data:
+            return f"Ошибка от Groq: {data['error'].get('message', 'Неизвестная ошибка')}"
+        
+        # Проверяем, есть ли choices
+        if "choices" not in data or len(data["choices"]) == 0:
+            return "Groq не вернул ответ. Проверьте ключ или лимиты."
+        
+        return data["choices"][0]["message"]["content"]
+        
+    except Exception as e:
+        return f"Ошибка при запросе к Groq: {str(e)}"
 
 # --- Функция 3: текст -> голос (Edge TTS, бесплатно) ---
 async def text_to_voice(text):
@@ -64,27 +83,33 @@ async def text_to_voice(text):
     await tts.save("response.mp3")
     return "response.mp3"
 
-# --- Функция 4: отправка голосового в Telegram ---
+# --- Функция 4: отправка текстового сообщения в Telegram ---
+def send_message(chat_id, text):
+    url = f"https://api.telegram.org/bot{8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    requests.post(url, json=payload)
+
+# --- Функция 5: отправка голосового в Telegram ---
 def send_voice(chat_id, audio_path):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVoice"
+    url = f"https://api.telegram.org/bot{8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI}/sendVoice"
     with open(audio_path, "rb") as f:
         files = {"voice": f}
         data = {"chat_id": chat_id}
         requests.post(url, files=files, data=data)
 
-# --- Функция 5: скачивание голосового от пользователя ---
+# --- Функция 6: скачивание голосового от пользователя ---
 def download_voice(file_id):
-    file_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}"
+    file_url = f"https://api.telegram.org/bot{8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI}/getFile?file_id={file_id}"
     file_info = requests.get(file_url).json()
     file_path = file_info["result"]["file_path"]
-    audio_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+    audio_url = f"https://api.telegram.org/file/bot{8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI}/{file_path}"
     audio_content = requests.get(audio_url).content
     with open("user_voice.ogg", "wb") as f:
         f.write(audio_content)
     return "user_voice.ogg"
 
 # --- Вебхук: точка входа для Telegram ---
-@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+@app.route(f"/{8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI}", methods=["POST"])
 def webhook():
     update = request.get_json()
     
@@ -99,17 +124,19 @@ def webhook():
             
             # 2. Расшифровываем в текст
             user_text = transcribe_audio(audio_file)
-            if not user_text:
-                # Отправляем текстовое сообщение об ошибке
-                error_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-                requests.post(error_url, json={
-                    "chat_id": chat_id,
-                    "text": "Не удалось распознать речь. Попробуйте ещё раз."
-                })
+            
+            # Если при расшифровке произошла ошибка или текст пустой
+            if not user_text or "ошибка" in user_text.lower():
+                send_message(chat_id, f"⚠️ Не удалось распознать речь: {user_text}")
                 return "OK", 200
             
             # 3. Анализируем через 3 роли
             analysis = analyze_text(user_text)
+            
+            # Если анализ вернул ошибку
+            if "ошибка" in analysis.lower():
+                send_message(chat_id, f"⚠️ Ошибка при анализе: {analysis}")
+                return "OK", 200
             
             # 4. Превращаем в голос
             voice_file = asyncio.run(text_to_voice(analysis))
@@ -119,11 +146,7 @@ def webhook():
             
         except Exception as e:
             # Если ошибка — отправляем текстовое уведомление
-            error_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-            requests.post(error_url, json={
-                "chat_id": chat_id,
-                "text": f"⚠️ Ошибка: {str(e)}"
-            })
+            send_message(chat_id, f"⚠️ Ошибка: {str(e)}")
         
         finally:
             # Чистим временные файлы
@@ -136,9 +159,13 @@ def webhook():
 # --- Запуск ---
 if __name__ == "__main__":
     # Устанавливаем вебхук (связь Telegram -> ваш сервер)
-    webhook_url = f"https://voice-diary-bot.onrender.com/{TELEGRAM_TOKEN}"
-    set_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}"
-    requests.get(set_url)
+    webhook_url = f"https://voice-diary-bot.onrender.com/{8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI}"
+    set_url = f"https://api.telegram.org/bot{8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI}/setWebhook?url={webhook_url}"
+    try:
+        response = requests.get(set_url)
+        print("Webhook response:", response.json())
+    except Exception as e:
+        print("Error setting webhook:", e)
     
     # Запускаем Flask-сервер
     app.run(host="0.0.0.0", port=10000)
