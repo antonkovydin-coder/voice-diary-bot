@@ -50,7 +50,7 @@ def analyze_text(user_text):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "llama-3.1-70b-versatile",
+        "model": "llama3-70b-8192",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Мысль пользователя: {user_text}"}
