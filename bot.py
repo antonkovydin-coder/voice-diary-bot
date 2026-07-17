@@ -9,8 +9,8 @@ import asyncio
 # =============================================
 # 1. ВСТАВЬТЕ СВОИ КЛЮЧИ (ОБЯЗАТЕЛЬНО!)
 # =============================================
-TELEGRAM_TOKEN = "8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI"   # Например: "123456:ABC-DEF"
-GROQ_API_KEY = "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. - 2"             # Например: "gsk_abc123..."
+TELEGRAM_TOKEN = "8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI"
+GROQ_API_KEY = "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"
 # =============================================
 
 app = Flask(__name__)
@@ -78,20 +78,20 @@ def analyze_text(user_text):
 
 # --- Функция 3: текст -> голос (Edge TTS, бесплатно) ---
 async def text_to_voice(text):
-    voice = "ru-RU-DmitryNeural"  # мужской голос, можно сменить на женский
+    voice = "ru-RU-DmitryNeural"
     tts = edge_tts.Communicate(text, voice)
     await tts.save("response.mp3")
     return "response.mp3"
 
 # --- Функция 4: отправка текстового сообщения в Telegram ---
 def send_message(chat_id, text):
-    url = f"https://api.telegram.org/bot{8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
     requests.post(url, json=payload)
 
 # --- Функция 5: отправка голосового в Telegram ---
 def send_voice(chat_id, audio_path):
-    url = f"https://api.telegram.org/bot{8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI}/sendVoice"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVoice"
     with open(audio_path, "rb") as f:
         files = {"voice": f}
         data = {"chat_id": chat_id}
@@ -99,57 +99,45 @@ def send_voice(chat_id, audio_path):
 
 # --- Функция 6: скачивание голосового от пользователя ---
 def download_voice(file_id):
-    file_url = f"https://api.telegram.org/bot{8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI}/getFile?file_id={file_id}"
+    file_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}"
     file_info = requests.get(file_url).json()
     file_path = file_info["result"]["file_path"]
-    audio_url = f"https://api.telegram.org/file/bot{8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI}/{file_path}"
+    audio_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
     audio_content = requests.get(audio_url).content
     with open("user_voice.ogg", "wb") as f:
         f.write(audio_content)
     return "user_voice.ogg"
 
 # --- Вебхук: точка входа для Telegram ---
-@app.route(f"/{8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI}", methods=["POST"])
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     update = request.get_json()
     
-    # Проверяем, что это голосовое сообщение
     if "message" in update and "voice" in update["message"]:
         chat_id = update["message"]["chat"]["id"]
         file_id = update["message"]["voice"]["file_id"]
         
         try:
-            # 1. Скачиваем голосовое пользователя
             audio_file = download_voice(file_id)
-            
-            # 2. Расшифровываем в текст
             user_text = transcribe_audio(audio_file)
             
-            # Если при расшифровке произошла ошибка или текст пустой
             if not user_text or "ошибка" in user_text.lower():
                 send_message(chat_id, f"⚠️ Не удалось распознать речь: {user_text}")
                 return "OK", 200
             
-            # 3. Анализируем через 3 роли
             analysis = analyze_text(user_text)
             
-            # Если анализ вернул ошибку
             if "ошибка" in analysis.lower():
                 send_message(chat_id, f"⚠️ Ошибка при анализе: {analysis}")
                 return "OK", 200
             
-            # 4. Превращаем в голос
             voice_file = asyncio.run(text_to_voice(analysis))
-            
-            # 5. Отправляем голосовой ответ
             send_voice(chat_id, voice_file)
             
         except Exception as e:
-            # Если ошибка — отправляем текстовое уведомление
             send_message(chat_id, f"⚠️ Ошибка: {str(e)}")
         
         finally:
-            # Чистим временные файлы
             for f in ["user_voice.ogg", "response.mp3"]:
                 if os.path.exists(f):
                     os.remove(f)
@@ -158,14 +146,12 @@ def webhook():
 
 # --- Запуск ---
 if __name__ == "__main__":
-    # Устанавливаем вебхук (связь Telegram -> ваш сервер)
-    webhook_url = f"https://voice-diary-bot.onrender.com/{8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI}"
-    set_url = f"https://api.telegram.org/bot{8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI}/setWebhook?url={webhook_url}"
+    webhook_url = f"https://voice-diary-bot.onrender.com/{TELEGRAM_TOKEN}"
+    set_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}"
     try:
         response = requests.get(set_url)
         print("Webhook response:", response.json())
     except Exception as e:
         print("Error setting webhook:", e)
     
-    # Запускаем Flask-сервер
     app.run(host="0.0.0.0", port=10000)
