@@ -5,10 +5,9 @@ import time
 from flask import Flask, request
 import edge_tts
 import asyncio
-from pydub import AudioSegment  # Добавляем библиотеку для конвертации
 
 # =============================================
-# 1. ВСТАВЬТЕ СВОИ КЛЮЧИ (ОБЯЗАТЕЛЬНО!)
+# 1. ВАШИ КЛЮЧИ (УЖЕ ВСТАВЛЕНЫ)
 # =============================================
 TELEGRAM_TOKEN = "8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI"
 GROQ_API_KEY = "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"
@@ -53,7 +52,7 @@ def analyze_text(user_text):
 3. Шутка должна быть короткой (15–25 секунд устной речи).
 4. Юмор — интеллектуальный, тонкий, без мата и грубости.
 5. Ты обыгрываешь то, что сказал пользователь — подхватываешь его фразу и выкручиваешь её в смешную сторону.
-6. Добавляй ЭМОЦИОНАЛЬНЫЕ ВОСКЛИЦАНИЯ в зависимости от интонации:
+6. Добавляй ЭМОЦИОНАЛЬНЫЕ ВОСКЛИЦАНИЯ:
    - Удивление: «Ой, не могу!», «Вот это да!», «Ну ни фига себе!»
    - Ирония: «Ну ты даёшь!», «Слушай, я просто в шоке...»
    - Восхищение: «Андрюля, это гениально!», «Дрюня, ты красавчик!»
@@ -100,17 +99,12 @@ def analyze_text(user_text):
     except Exception as e:
         return f"Ошибка при запросе к Groq: {str(e)}"
 
-# --- Функция 3: текст -> голос (высокое качество) ---
+# --- Функция 3: текст -> голос (улучшенный голос) ---
 async def text_to_voice(text):
-    voice = "ru-RU-SvetlanaNeural"
-    communicate = edge_tts.Communicate(text, voice)
-    await communicate.save("response_original.mp3")  # Сохраняем оригинал
-    
-    # Конвертируем в более высокий битрейт (192 кбит/с)
-    audio = AudioSegment.from_mp3("response_original.mp3")
-    audio.export("response.mp3", format="mp3", bitrate="192k")
-    
-    os.remove("response_original.mp3")  # Удаляем временный файл
+    # Используем более качественный женский голос
+    voice = "ru-RU-DariyaNeural"  # Заменено на DariyaNeural
+    tts = edge_tts.Communicate(text, voice)
+    await tts.save("response.mp3")
     return "response.mp3"
 
 # --- Функция 4: отправка текстового сообщения в Telegram ---
@@ -173,7 +167,7 @@ def webhook():
             send_message(chat_id, f"⚠️ Ошибка: {str(e)}")
         
         finally:
-            for f in ["user_voice.ogg", "response_original.mp3", "response.mp3"]:
+            for f in ["user_voice.ogg", "response.mp3"]:
                 if os.path.exists(f):
                     os.remove(f)
     
