@@ -7,10 +7,10 @@ import edge_tts
 import asyncio
 
 # =============================================
-# 1. ВСТАВЬТЕ СВОИ КЛЮЧИ (ОБЯЗАТЕЛЬНО!)
+# 1. ВСТАВЬТЕ СВОИ КЛЮЧИ (ОНИ УЖЕ ЗДЕСЬ!)
 # =============================================
-TELEGRAM_TOKEN = "8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI"   # Например: "123456:ABC-DEF"
-GROQ_API_KEY = "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"             # Например: "gsk_abc123..."
+TELEGRAM_TOKEN = "8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI"
+GROQ_API_KEY = "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"
 # =============================================
 
 app = Flask(__name__)
@@ -46,13 +46,6 @@ def analyze_text(user_text):
 7. Если пользователь говорит «давай пошутим на тему...» — ты сразу выдаёшь шутку на эту тему.
 8. Если пользователь просто говорит что-то — ты находишь в этом абсурд и превращаешь в шутку.
 
-Примеры:
-Пользователь: «Я сегодня забыл выключить утюг»
-Ты: «Андрюля, слушай... Ты не забыл выключить утюг, ты просто хотел проверить, как там без тебя твоя квартира справляется. Ну и как? Она сгорела? То-то же!.. Ой, Андрюля, ну ты даёшь!»
-
-Пользователь: «Как думаешь, зачем люди ходят на работу?»
-Ты: «Андрюшенька, ну ты вопрос задал... Люди ходят на работу, чтобы понять, что выходные — это лучшее изобретение человечества. А работа нужна, чтобы мы ценили эти два дня! Андрюля, я это как психолог тебе говорю!»
-
 Теперь пользователь сказал: "{user_text}"
 Ответь короткой, остроумной, интеллектуальной шуткой с тёплым обращением и эмоциональным восклицанием.
 """
@@ -62,13 +55,13 @@ def analyze_text(user_text):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "openai/gpt-oss-120b",
+        "model": "llama-3.1-8b-instant",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Мысль пользователя: {user_text}"}
         ],
-        "temperature": 0.9,  # Креативность
-        "max_tokens": 120    # Короткая шутка
+        "temperature": 0.9,
+        "max_tokens": 120
     }
     
     try:
@@ -88,7 +81,7 @@ def analyze_text(user_text):
 
 # --- Функция 3: текст -> голос (женский, Edge TTS) ---
 async def text_to_voice(text):
-    voice = "ru-RU-SvetlanaNeural"  # Женский голос
+    voice = "ru-RU-SvetlanaNeural"
     tts = edge_tts.Communicate(text, voice)
     await tts.save("response.mp3")
     return "response.mp3"
@@ -117,6 +110,11 @@ def download_voice(file_id):
     with open("user_voice.ogg", "wb") as f:
         f.write(audio_content)
     return "user_voice.ogg"
+
+# --- Проверка здоровья для Render ---
+@app.route('/')
+def health_check():
+    return "OK", 200
 
 # --- Вебхук: точка входа для Telegram ---
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
@@ -156,12 +154,5 @@ def webhook():
 
 # --- Запуск ---
 if __name__ == "__main__":
-    webhook_url = f"https://voice-diary-bot.onrender.com/{TELEGRAM_TOKEN}"
-    set_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}"
-    try:
-        response = requests.get(set_url)
-        print("Webhook response:", response.json())
-    except Exception as e:
-        print("Error setting webhook:", e)
-    
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
