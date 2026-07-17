@@ -9,8 +9,8 @@ import asyncio
 # =============================================
 # 1. ВСТАВЬТЕ СВОИ КЛЮЧИ (ОБЯЗАТЕЛЬНО!)
 # =============================================
-TELEGRAM_TOKEN = "8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI"   # Например: "123456:ABC-DEF"
-GROQ_API_KEY = "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. - 2"             # Например: "gsk_abc123..."
+TELEGRAM_TOKEN = "8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI"   # Ваш токен от @BotFather
+GROQ_API_KEY = "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"             # Ваш ключ Groq (без лишних пробелов!)
 # =============================================
 
 app = Flask(__name__)
@@ -100,7 +100,12 @@ def webhook():
             # 2. Расшифровываем в текст
             user_text = transcribe_audio(audio_file)
             if not user_text:
-                send_voice(chat_id, "Не удалось распознать речь. Попробуйте ещё раз.")
+                # Отправляем текстовое сообщение об ошибке
+                error_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+                requests.post(error_url, json={
+                    "chat_id": chat_id,
+                    "text": "Не удалось распознать речь. Попробуйте ещё раз."
+                })
                 return "OK", 200
             
             # 3. Анализируем через 3 роли
@@ -131,7 +136,7 @@ def webhook():
 # --- Запуск ---
 if __name__ == "__main__":
     # Устанавливаем вебхук (связь Telegram -> ваш сервер)
-    webhook_url = f"https://ВАШ_САЙТ.render.com/{TELEGRAM_TOKEN}"
+    webhook_url = f"https://voice-diary-bot.onrender.com/{TELEGRAM_TOKEN}"
     set_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}"
     requests.get(set_url)
     
