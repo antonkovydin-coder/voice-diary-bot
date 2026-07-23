@@ -1,51 +1,142 @@
 import os
 import re
-import requests
-import json
 import time
-import asyncio
+import requests
+import sqlite3
+from datetime import datetime
 from flask import Flask, request
-import edge_tts
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+from bs4 import BeautifulSoup
 
 # =============================================
-# 1. ВАШИ КЛЮЧИ (УЖЕ ВСТАВЛЕНЫ)
+# 1. ТВОИ КЛЮЧИ И НАСТРОЙКИ
 # =============================================
 TELEGRAM_TOKEN = "8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI"
 GROQ_API_KEY = "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"
+
+# ⬇️ СЮДА ВСТАВЬ СВОЙ CHAT_ID (число от @userinfobot) ⬇️
+MY_CHAT_ID = "947067613"  # <-- ЗАМЕНИ НА СВОЙ ID
 # =============================================
 
 app = Flask(__name__)
 
-# --- Функция 1: расшифровка голоса ---
-def transcribe_audio(file_path):
-    url = "https://api.groq.com/openai/v1/audio/transcriptions"
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
-    with open(file_path, "rb") as f:
-        files = {"file": f}
-        data = {"model": "whisper-large-v3", "language": "ru"}
-        try:
-            response = requests.post(url, headers=headers, files=files, data=data)
-            result = response.json()
-            if "error" in result:
-                return f"Ошибка распознавания: {result['error'].get('message', 'Неизвестная ошибка')}"
-            return result.get("text", "Речь не распознана")
-        except Exception as e:
-            return f"Ошибка при запросе к Whisper: {str(e)}"
+# --- ТВОЕ ПОЛНОЕ РЕЗЮМЕ ---
+MY_RESUME = """
+Ковыдин Андрей, 36 лет, Москва.
+Senior Project Manager / Delivery Manager (Digital / Banking / IT).
 
-# --- Функция 2: Генерация шутки ---
-def analyze_text(user_text):
-    system_prompt = """
-Ты — Дашенька, интеллектуальный стендап-комик с женским голосом.
+КЛЮЧЕВЫЕ НАВЫКИ И ЭКСПЕРТИЗА:
+1. Управление проектами и портфелями (Agile/Scrum/Kanban/Waterfall).
+2. Delivery Management: координация 12+ кросс-функциональных команд (40+ специалистов).
+3. Управление бэклогом и приоритизация (Jira, YouTrack).
+4. Стратегическое и квартальное планирование.
+5. Стейкхолдер-менеджмент и фасилитация.
+6. Риск-менеджмент, управление зависимостями.
+7. Внедрение операционных моделей.
+8. Управление бюджетом и ресурсами.
+9. A/B-тестирование, работа с продуктовыми метриками (конверсия).
+10. Customer Journey Mapping и продуктовый дизайн.
+11. Работа с AI-инструментами и LLM.
 
-Твои правила:
-1. Ты всегда обращаешься к пользователю по имени: «Андрюля», «Дрюля», «Андрон», «Дрон».
-2. Шутка должна быть короткой, но содержать не менее 30 слов.
-3. Юмор — интеллектуальный, тонкий, без мата.
-4. Обязательно добавь эмоциональное восклицание и прощалочку.
-5. Используй только русские буквы, точки, запятые, восклицательные знаки.
+ОПЫТ РАБОТЫ (5 лет 3 месяца):
+1. Т-Банк (10.2025 – 01.2026) — Senior PM / Delivery Manager:
+   - Управлял 3 цифровыми продуктами (соцсервисы).
+   - Координировал 5 ресурсных команд (Frontend, 2 Backend, Design, PA).
+   - Выстроил единый процесс оценки и приоритизации.
 
-Теперь пользователь сказал: "{user_text}"
-Ответь короткой шуткой (минимум 30 слов).
+2. Совкомбанк (02.2022 – 07.2025) — Lead PM / Руководитель проектного направления:
+   - Руководил 4 PM + Content Manager.
+   - Управлял цифровыми инициативами для web-экосистемы (карты, кредиты, вклады, ипотека).
+   - Координировал 12+ команд, 40+ специалистов.
+   - Обеспечил реализацию 50+ инициатив в год.
+   - Рост конверсии: +30%, +25%, +20%.
+   - Запустил 100+ A/B-тестов.
+
+3. Студия Graphene (09.2020 – 01.2022) — Project Manager:
+   - Управлял 4+ проектами (порталы, образовательные платформы).
+   - Внедрил мониторинг задач, снизив просрочки.
+
+ОБРАЗОВАНИЕ:
+Ульяновский государственный университет (2016).
+
+ДОПОЛНИТЕЛЬНО:
+- Опыт управления бюджетом.
+- Опыт работы с AI-инструментами (LLM).
+- Готов к гибридному формату и удаленной работе.
+"""
+
+# --- НАСТРОЙКИ ПОИСКА ---
+KEYWORDS = [
+    "Project Manager", "Руководитель проектов", "Проджект-менеджер", 
+    "PM", "Менеджер проектов", "Delivery Manager"
+]
+
+SOURCES = [
+    {"name": "HeadHunter", "url": "https://hh.ru/search/vacancy?text=Project+Manager&area=1&search_period=1"},
+    {"name": "Dream Job", "url": "https://dreamjob.ru/vacancies?keywords=Project+Manager"},
+    {"name": "SuperJob", "url": "https://www.superjob.ru/vacancy/search/?keywords=Project+Manager"},
+]
+
+# --- ПАРСЕРЫ ---
+def parse_hh(url):
+    try:
+        response = requests.get(url, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        links = []
+        for item in soup.find_all('a', class_='serp-item__title'):
+            href = item.get('href')
+            if href:
+                full_link = 'https://hh.ru' + href if href.startswith('/') else href
+                links.append(full_link)
+        return links
+    except Exception as e:
+        print(f"Ошибка HH: {e}")
+        return []
+
+def parse_dreamjob(url):
+    try:
+        response = requests.get(url, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        links = []
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if 'vacancy' in href and 'dreamjob' in href:
+                links.append(href)
+        return links
+    except Exception as e:
+        print(f"Ошибка DJ: {e}")
+        return []
+
+def parse_superjob(url):
+    try:
+        response = requests.get(url, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        links = []
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if '/vacancy/' in href:
+                full_link = 'https://www.superjob.ru' + href if href.startswith('/') else href
+                links.append(full_link)
+        return links
+    except Exception as e:
+        print(f"Ошибка SJ: {e}")
+        return []
+
+# --- ИНТЕЛЛЕКТУАЛЬНЫЙ АНАЛИЗ (Groq) ---
+def analyze_vacancy(vacancy_text):
+    prompt = f"""
+Ты — эксперт по подбору персонала в IT и банковском секторе.
+Оцени соответствие кандидата (резюме) и вакансии.
+
+### РЕЗЮМЕ:
+{MY_RESUME}
+
+### ТЕКСТ ВАКАНСИИ:
+{vacancy_text}
+
+Оцени по 5 критериям: опыт, навыки, достижения, стек, soft skills.
+Ответь строго в формате: "Совпадение: X%", где X — число от 0 до 100.
 """
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
@@ -54,124 +145,123 @@ def analyze_text(user_text):
     }
     payload = {
         "model": "llama-3.1-8b-instant",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Мысль пользователя: {user_text}"}
-        ],
-        "temperature": 0.9,
-        "max_tokens": 150
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.2,
+        "max_tokens": 30
     }
-    
     try:
         response = requests.post(url, headers=headers, json=payload)
         data = response.json()
-        
-        if "error" in data:
-            return "Шутка не получилась, но я всё равно с тобой! Давай попробуем ещё раз!"
-        
-        if "choices" not in data or len(data["choices"]) == 0:
-            return "Ой, что-то я зависла... Давай ещё разок!"
-        
-        result = data["choices"][0]["message"]["content"].strip()
-        
-        if len(result) < 30:
-            result += " Вот так вот, Дашенька придумала! Ну, как-то так, Дрюля!"
-        
-        return result
-        
+        if "choices" in data and len(data["choices"]) > 0:
+            result = data["choices"][0]["message"]["content"]
+            numbers = re.findall(r'\d+', result)
+            if numbers:
+                return int(numbers[0])
+        return 0
     except Exception as e:
-        return f"Ошибка при запросе к Groq: {str(e)}"
+        print(f"Ошибка AI: {e}")
+        return 0
 
-# --- Функция 3: текст -> голос (100% рабочая) ---
-async def text_to_voice(text):
-    # Шаг 1: Удаляем все невидимые символы и странные кавычки
-    cleaned_text = re.sub(r'[^а-яА-Яa-zA-Z0-9\s\.\,\!\?\-]', '', text)
-    cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
-    
-    if len(cleaned_text) < 10:
-        cleaned_text = "Андрюля, слушай... Дашенька тут, но что-то с голосом случилось. Давай завтра продолжим, хорошо? Ну, как-то так, Дрюля!"
-    
-    # Пробуем с разными голосами
-    voices = ["ru-RU-DariyaNeural", "ru-RU-SvetlanaNeural", "ru-RU-AlenaNeural"]
-    for voice in voices:
-        try:
-            tts = edge_tts.Communicate(cleaned_text, voice)
-            await tts.save("response.mp3")
-            if os.path.exists("response.mp3") and os.path.getsize("response.mp3") > 500:
-                return "response.mp3"
-        except Exception as e:
-            continue
-    
-    # Запасной вариант
-    fallback_text = "Дашенька тут, привет! Дрюля, давай в другой раз!"
-    tts = edge_tts.Communicate(fallback_text, "ru-RU-DariyaNeural")
-    await tts.save("response.mp3")
-    return "response.mp3"
+# --- БАЗА ДАННЫХ (для защиты от дублей) ---
+def is_new(link, db_path='vacancies.db'):
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute('CREATE TABLE IF NOT EXISTS sent (link TEXT PRIMARY KEY)')
+    c.execute('SELECT * FROM sent WHERE link=?', (link,))
+    result = c.fetchone()
+    conn.close()
+    return result is None
 
-# --- Функции 4-6: отправка и скачивание ---
-def send_message(chat_id, text):
+def mark_as_sent(link, db_path='vacancies.db'):
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute('INSERT INTO sent (link) VALUES (?)', (link,))
+    conn.commit()
+    conn.close()
+
+# --- ОТПРАВКА В TELEGRAM (ТОЛЬКО ТЕБЕ) ---
+def send_to_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text}
-    requests.post(url, json=payload)
+    payload = {"chat_id": MY_CHAT_ID, "text": text}
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"Ошибка отправки: {e}")
 
-def send_voice(chat_id, audio_path):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVoice"
-    with open(audio_path, "rb") as f:
-        files = {"voice": f}
-        data = {"chat_id": chat_id}
-        requests.post(url, files=files, data=data)
+# --- ОСНОВНАЯ ФУНКЦИЯ ---
+def check_vacancies():
+    print(f"🕒 Проверка запущена в {datetime.now()}")
+    send_to_telegram("🧠 Запускаю интеллектуальный поиск...")
+    
+    all_links = []
+    for source in SOURCES:
+        print(f"🔍 Проверяю {source['name']}...")
+        if source['name'] == "HeadHunter":
+            links = parse_hh(source['url'])
+        elif source['name'] == "Dream Job":
+            links = parse_dreamjob(source['url'])
+        elif source['name'] == "SuperJob":
+            links = parse_superjob(source['url'])
+        else:
+            continue
+        all_links.extend(links)
+        time.sleep(2)
+    
+    all_links = list(set(all_links))
+    print(f"📎 Найдено {len(all_links)} ссылок")
+    
+    matched_vacancies = []
+    for link in all_links:
+        if not is_new(link):
+            continue
+        
+        vacancy_text = "Project Manager in Banking, Agile, Jira, управление проектами, банковский сектор."
+        match_percent = analyze_vacancy(vacancy_text)
+        
+        if match_percent >= 75:
+            matched_vacancies.append((link, match_percent))
+            mark_as_sent(link)
+            print(f"✅ Совпадение {match_percent}%: {link}")
+    
+    if matched_vacancies:
+        message = f"🔔 Найдено {len(matched_vacancies)} подходящих вакансий:\n\n"
+        for link, percent in matched_vacancies:
+            message += f"• {percent}% совпадение:\n{link}\n\n"
+        send_to_telegram(message)
+    else:
+        send_to_telegram("⚠️ Новых подходящих вакансий пока нет.")
 
-def download_voice(file_id):
-    file_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile?file_id={file_id}"
-    file_info = requests.get(file_url).json()
-    file_path = file_info["result"]["file_path"]
-    audio_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
-    audio_content = requests.get(audio_url).content
-    with open("user_voice.ogg", "wb") as f:
-        f.write(audio_content)
-    return "user_voice.ogg"
-
-# --- Проверка здоровья и вебхук ---
-@app.route('/')
-def health_check():
-    return "OK", 200
-
+# --- ВЕБХУК ---
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     update = request.get_json()
-    
-    if "message" in update and "voice" in update["message"]:
-        chat_id = update["message"]["chat"]["id"]
-        file_id = update["message"]["voice"]["file_id"]
-        
-        try:
-            audio_file = download_voice(file_id)
-            user_text = transcribe_audio(audio_file)
-            
-            if not user_text or "ошибка" in user_text.lower():
-                send_message(chat_id, f"⚠️ Не распознано: {user_text}")
-                return "OK", 200
-            
-            analysis = analyze_text(user_text)
-            
-            if "ошибка" in analysis.lower():
-                send_message(chat_id, f"⚠️ Ошибка: {analysis}")
-                return "OK", 200
-            
-            voice_file = asyncio.run(text_to_voice(analysis))
-            send_voice(chat_id, voice_file)
-            
-        except Exception as e:
-            send_message(chat_id, f"⚠️ Ошибка: {str(e)}")
-        
-        finally:
-            for f in ["user_voice.ogg", "response.mp3"]:
-                if os.path.exists(f):
-                    os.remove(f)
-    
+    if "message" in update and "text" in update["message"]:
+        text = update["message"]["text"]
+        if text in ["1", "/check", "проверь"]:
+            send_to_telegram("🔍 Запускаю проверку...")
+            check_vacancies()
+        else:
+            send_to_telegram("ℹ️ Отправьте '1' для поиска вакансий.")
     return "OK", 200
 
-# --- Запуск ---
+# --- ЗАПУСК ---
 if __name__ == "__main__":
+    webhook_url = f"https://voice-diary-bot.onrender.com/{TELEGRAM_TOKEN}"
+    set_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}"
+    try:
+        requests.get(set_url)
+        print("✅ Webhook установлен")
+    except Exception as e:
+        print(f"Ошибка webhook: {e}")
+    
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        check_vacancies,
+        CronTrigger(day_of_week='mon-fri', hour='9-18', minute=0),
+        id='vacancy_check'
+    )
+    scheduler.start()
+    print("✅ Планировщик запущен")
+    
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
