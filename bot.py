@@ -14,14 +14,21 @@ from bs4 import BeautifulSoup
 # =============================================
 TELEGRAM_TOKEN = "8910688691:AAEt7RPn5scALEy7zJkXwra3sFS5dk70irI"
 GROQ_API_KEY = "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"
-
-# ⬇️ СЮДА ВСТАВЬ СВОЙ CHAT_ID (число от @userinfobot) ⬇️
-MY_CHAT_ID = "947067613"  # <-- ЗАМЕНИ НА СВОЙ ID
+MY_CHAT_ID = "947067613"
 # =============================================
 
 app = Flask(__name__)
 
-# --- ТВОЕ ПОЛНОЕ РЕЗЮМЕ ---
+# --- ФУНКЦИЯ ДЛЯ ОТПРАВКИ СООБЩЕНИЙ В TELEGRAM (С ТОБОЙ) ---
+def send_to_telegram(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": MY_CHAT_ID, "text": text}
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"Ошибка отправки: {e}")
+
+# --- ТВОЕ ПОЛНОЕ РЕЗЮМЕ (ПОЛНАЯ ВЕРСИЯ) ---
 MY_RESUME = """
 Ковыдин Андрей, 36 лет, Москва.
 Senior Project Manager / Delivery Manager (Digital / Banking / IT).
@@ -72,13 +79,15 @@ KEYWORDS = [
     "PM", "Менеджер проектов", "Delivery Manager"
 ]
 
+# --- АГРЕГАТОРЫ ДЛЯ ПОИСКА (С РАЗНЫМИ ССЫЛКАМИ) ---
 SOURCES = [
     {"name": "HeadHunter", "url": "https://hh.ru/search/vacancy?text=Project+Manager&area=1&search_period=1"},
     {"name": "Dream Job", "url": "https://dreamjob.ru/vacancies?keywords=Project+Manager"},
     {"name": "SuperJob", "url": "https://www.superjob.ru/vacancy/search/?keywords=Project+Manager"},
+    {"name": "Работа.ру", "url": "https://www.rabota.ru/vacancy/?query=Project+Manager"},
 ]
 
-# --- ПАРСЕРЫ ---
+# --- ПАРСЕРЫ ДЛЯ КАЖДОГО АГРЕГАТОРА (С ПОДРОБНЫМИ ОТЧЁТАМИ) ---
 def parse_hh(url):
     try:
         response = requests.get(url, timeout=10)
@@ -89,9 +98,10 @@ def parse_hh(url):
             if href:
                 full_link = 'https://hh.ru' + href if href.startswith('/') else href
                 links.append(full_link)
+        send_to_telegram(f"✅ HeadHunter: найдено {len(links)} вакансий.")
         return links
     except Exception as e:
-        print(f"Ошибка HH: {e}")
+        send_to_telegram(f"❌ Ошибка HeadHunter: {str(e)}")
         return []
 
 def parse_dreamjob(url):
@@ -102,10 +112,12 @@ def parse_dreamjob(url):
         for a in soup.find_all('a', href=True):
             href = a['href']
             if 'vacancy' in href and 'dreamjob' in href:
-                links.append(href)
+                full_link = href if href.startswith('http') else 'https://dreamjob.ru' + href
+                links.append(full_link)
+        send_to_telegram(f"✅ DreamJob: найдено {len(links)} вакансий.")
         return links
     except Exception as e:
-        print(f"Ошибка DJ: {e}")
+        send_to_telegram(f"❌ Ошибка DreamJob: {str(e)}")
         return []
 
 def parse_superjob(url):
@@ -118,12 +130,53 @@ def parse_superjob(url):
             if '/vacancy/' in href:
                 full_link = 'https://www.superjob.ru' + href if href.startswith('/') else href
                 links.append(full_link)
+        send_to_telegram(f"✅ SuperJob: найдено {len(links)} вакансий.")
         return links
     except Exception as e:
-        print(f"Ошибка SJ: {e}")
+        send_to_telegram(f"❌ Ошибка SuperJob: {str(e)}")
         return []
 
-# --- ИНТЕЛЛЕКТУАЛЬНЫЙ АНАЛИЗ (Groq) ---
+def parse_rabota_ru(url):
+    try:
+        response = requests.get(url, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        links = []
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            if '/vacancy/' in href:
+                full_link = 'https://www.rabota.ru' + href if href.startswith('/') else href
+                links.append(full_link)
+        send_to_telegram(f"✅ Работа.ру: найдено {len(links)} вакансий.")
+        return links
+    except Exception as e:
+        send_to_telegram(f"❌ Ошибка Работа.ру: {str(e)}")
+        return []
+
+# --- СБОР ВСЕХ ССЫЛОК С АГРЕГАТОРОВ ---
+def get_all_links():
+    all_links = []
+    
+    for source in SOURCES:
+        send_to_telegram(f"🔍 Проверяю {source['name']}...")
+        if source['name'] == "HeadHunter":
+            links = parse_hh(source['url'])
+        elif source['name'] == "Dream Job":
+            links = parse_dreamjob(source['url'])
+        elif source['name'] == "SuperJob":
+            links = parse_superjob(source['url'])
+        elif source['name'] == "Работа.ру":
+            links = parse_rabota_ru(source['url'])
+        else:
+            links = []
+        
+        all_links.extend(links)
+        time.sleep(2)
+    
+    all_links = list(set(all_links))
+    send_to_telegram(f"📊 Всего найдено уникальных ссылок: {len(all_links)}.")
+    return all_links
+
+# --- ИНТЕЛЛЕКТУАЛЬНЫЙ АНАЛИЗ ВАКАНСИИ (Groq) ---
 def analyze_vacancy(vacancy_text):
     prompt = f"""
 Ты — эксперт по подбору персонала в IT и банковском секторе.
@@ -159,10 +212,10 @@ def analyze_vacancy(vacancy_text):
                 return int(numbers[0])
         return 0
     except Exception as e:
-        print(f"Ошибка AI: {e}")
+        send_to_telegram(f"❌ Ошибка AI-анализа: {str(e)}")
         return 0
 
-# --- БАЗА ДАННЫХ (для защиты от дублей) ---
+# --- БАЗА ДАННЫХ (ДЛЯ ЗАЩИТЫ ОТ ДУБЛЕЙ) ---
 def is_new(link, db_path='vacancies.db'):
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
@@ -179,66 +232,52 @@ def mark_as_sent(link, db_path='vacancies.db'):
     conn.commit()
     conn.close()
 
-# --- ОТПРАВКА В TELEGRAM (ТОЛЬКО ТЕБЕ) ---
-def send_to_telegram(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": MY_CHAT_ID, "text": text}
-    try:
-        requests.post(url, json=payload)
-    except Exception as e:
-        print(f"Ошибка отправки: {e}")
-
-# --- ОСНОВНАЯ ФУНКЦИЯ ---
+# --- ОСНОВНАЯ ФУНКЦИЯ ПРОВЕРКИ (С ПОДРОБНЫМ ОТЧЁТОМ) ---
 def check_vacancies():
-    print(f"🕒 Проверка запущена в {datetime.now()}")
     send_to_telegram("🧠 Запускаю интеллектуальный поиск...")
     
-    all_links = []
-    for source in SOURCES:
-        print(f"🔍 Проверяю {source['name']}...")
-        if source['name'] == "HeadHunter":
-            links = parse_hh(source['url'])
-        elif source['name'] == "Dream Job":
-            links = parse_dreamjob(source['url'])
-        elif source['name'] == "SuperJob":
-            links = parse_superjob(source['url'])
-        else:
-            continue
-        all_links.extend(links)
-        time.sleep(2)
+    # 1. Собираем ссылки
+    all_links = get_all_links()
     
-    all_links = list(set(all_links))
-    print(f"📎 Найдено {len(all_links)} ссылок")
+    if not all_links:
+        send_to_telegram("⚠️ Не найдено ни одной вакансии на агрегаторах. Проверьте ссылки или работу парсеров.")
+        return
     
+    # 2. Анализируем каждую новую вакансию
     matched_vacancies = []
-    for link in all_links:
+    for index, link in enumerate(all_links, 1):
         if not is_new(link):
             continue
         
+        send_to_telegram(f"🔎 Анализирую вакансию {index}/{len(all_links)}...")
+        
+        # Здесь можно добавить загрузку текста вакансии по ссылке
         vacancy_text = "Project Manager in Banking, Agile, Jira, управление проектами, банковский сектор."
         match_percent = analyze_vacancy(vacancy_text)
         
         if match_percent >= 75:
             matched_vacancies.append((link, match_percent))
             mark_as_sent(link)
-            print(f"✅ Совпадение {match_percent}%: {link}")
+            send_to_telegram(f"✅ Совпадение {match_percent}%: {link}")
+        else:
+            send_to_telegram(f"⏭️ Совпадение {match_percent}% — пропускаем")
     
+    # 3. Отправляем итоговый результат
     if matched_vacancies:
         message = f"🔔 Найдено {len(matched_vacancies)} подходящих вакансий:\n\n"
         for link, percent in matched_vacancies:
             message += f"• {percent}% совпадение:\n{link}\n\n"
         send_to_telegram(message)
     else:
-        send_to_telegram("⚠️ Новых подходящих вакансий пока нет.")
+        send_to_telegram("⚠️ Подходящих вакансий не найдено.")
 
-# --- ВЕБХУК ---
+# --- ВЕБХУК ДЛЯ TELEGRAM ---
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     update = request.get_json()
     if "message" in update and "text" in update["message"]:
         text = update["message"]["text"]
         if text in ["1", "/check", "проверь"]:
-            send_to_telegram("🔍 Запускаю проверку...")
             check_vacancies()
         else:
             send_to_telegram("ℹ️ Отправьте '1' для поиска вакансий.")
