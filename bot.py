@@ -2,12 +2,11 @@ import os
 import re
 import time
 import requests
-import sqlite3
-from datetime import datetime, timedelta
+import feedparser
+from datetime import datetime
 from flask import Flask, request
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from bs4 import BeautifulSoup
 
 # =============================================
 # 1. ТВОИ КЛЮЧИ
@@ -28,7 +27,7 @@ def send_to_telegram(text):
     except Exception as e:
         print(f"Ошибка отправки: {e}")
 
-# --- ТВОЁ РЕЗЮМЕ (КРАТКАЯ ВЕРСИЯ ДЛЯ АНАЛИЗА) ---
+# --- ТВОЁ РЕЗЮМЕ ---
 MY_RESUME = """
 Ковыдин Андрей, 36 лет, Москва.
 Senior Project Manager / Delivery Manager (Digital / Banking / IT).
@@ -38,61 +37,45 @@ Senior Project Manager / Delivery Manager (Digital / Banking / IT).
 Результаты: рост конверсии на 30%, запуск 100+ A/B-тестов.
 """
 
-# --- НАСТРОЙКИ ПОИСКА ---
-KEYWORDS = [
-    "Project Manager", "Руководитель проектов", "Проджект-менеджер", 
-    "PM", "Менеджер проектов", "Delivery Manager"
-]
-
-# --- ПОИСК НА HEADHUNTER (ТОЛЬКО ОН) ---
-def parse_hh():
-    url = "https://hh.ru/search/vacancy?text=Project+Manager&area=1&search_period=3"
+# --- ПОЛУЧЕНИЕ ВАКАНСИЙ ЧЕРЕЗ RSS ---
+def get_vacancies_from_rss():
+    # RSS-лента HeadHunter с фильтром по Project Manager (Москва)
+    rss_url = "https://hh.ru/rss/search/vacancy?text=Project+Manager&area=1&search_period=3"
+    
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        response = requests.get(url, headers=headers, timeout=15)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Собираем все вакансии с их данными
+        feed = feedparser.parse(rss_url)
         vacancies = []
-        vacancy_items = soup.find_all('div', class_='vacancy-serp-item-body')
         
-        for item in vacancy_items:
-            # Название вакансии
-            title_tag = item.find('a', class_='bloko-link')
-            if not title_tag:
-                continue
-            title = title_tag.text.strip()
-            link = title_tag.get('href')
-            if link and '/vacancy/' in link:
-                full_link = 'https://hh.ru' + link if link.startswith('/') else link
-            else:
-                continue
+        for entry in feed.entries:
+            # Извлекаем нужные данные
+            title = entry.title
+            link = entry.link
+            summary = entry.summary if hasattr(entry, 'summary') else ""
+            published = entry.published if hasattr(entry, 'published') else ""
             
-            # Компания
-            company_tag = item.find('a', class_='bloko-link bloko-link_kind-tertiary')
-            company = company_tag.text.strip() if company_tag else "Не указана"
-            
-            # Город и зарплата (упрощённо)
-            info_tag = item.find('div', class_='vacancy-serp-item__info')
-            info = info_tag.text.strip() if info_tag else ""
+            # Пытаемся извлечь название компании из заголовка
+            company = "Не указана"
+            if "в" in title:
+                parts = title.split("в")
+                if len(parts) > 1:
+                    company = parts[-1].strip()
             
             vacancies.append({
                 'title': title,
-                'link': full_link,
+                'link': link,
                 'company': company,
-                'info': info
+                'summary': summary,
+                'published': published
             })
         
-        send_to_telegram(f"✅ Найдено {len(vacancies)} вакансий на HeadHunter.")
+        send_to_telegram(f"✅ Получено {len(vacancies)} вакансий через RSS.")
         return vacancies
         
     except Exception as e:
-        send_to_telegram(f"❌ Ошибка HeadHunter: {str(e)}")
+        send_to_telegram(f"❌ Ошибка получения RSS: {str(e)}")
         return []
 
-# --- ИНТЕЛЛЕКТУАЛЬНЫЙ АНАЛИЗ ВАКАНСИИ (ЧЕРЕЗ GROQ) ---
+# --- ИНТЕЛЛЕКТУАЛЬНЫЙ АНАЛИЗ (ЧЕРЕЗ GROQ) ---
 def analyze_vacancy(vacancy_text):
     prompt = f"""
 Ты — эксперт по подбору персонала в IT и банковском секторе.
@@ -133,19 +116,19 @@ def analyze_vacancy(vacancy_text):
 
 # --- ОСНОВНАЯ ФУНКЦИЯ ---
 def check_vacancies():
-    send_to_telegram("🧠 Запускаю поиск на HeadHunter...")
+    send_to_telegram("🧠 Запускаю поиск через RSS...")
     
     # 1. Получаем вакансии
-    vacancies = parse_hh()
+    vacancies = get_vacancies_from_rss()
     if not vacancies:
-        send_to_telegram("⚠️ Вакансии не найдены. Проверь ссылку или структуру страницы.")
+        send_to_telegram("⚠️ Вакансии не получены. Проверь RSS-ленту.")
         return
     
     # 2. Анализируем каждую вакансию
     matched = []
-    for index, vac in enumerate(vacancies, 1):
+    for vac in vacancies:
         # Формируем текст для анализа
-        vacancy_text = f"{vac['title']} {vac['company']} {vac['info']}"
+        vacancy_text = f"{vac['title']} {vac['company']} {vac['summary']}"
         match_percent = analyze_vacancy(vacancy_text)
         
         # Если совпадение >= 65% — добавляем в результат
@@ -154,14 +137,18 @@ def check_vacancies():
                 'title': vac['title'],
                 'link': vac['link'],
                 'company': vac['company'],
-                'match': match_percent
+                'match': match_percent,
+                'published': vac['published']
             })
         
-        # Задержка, чтобы не перегружать API
-        time.sleep(1)
+        # Небольшая задержка
+        time.sleep(0.5)
     
     # 3. Отправляем результат
     if matched:
+        # Сортируем по убыванию процента совпадения
+        matched.sort(key=lambda x: x['match'], reverse=True)
+        
         message = f"🔔 Найдено {len(matched)} подходящих вакансий (совпадение ≥ 65%):\n\n"
         for item in matched:
             message += f"• {item['match']}% — {item['title']}\n"
