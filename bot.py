@@ -2,11 +2,11 @@ import os
 import re
 import time
 import requests
-import feedparser
 from datetime import datetime
 from flask import Flask, request
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from bs4 import BeautifulSoup
 
 # =============================================
 # 1. ТВОИ КЛЮЧИ
@@ -26,7 +26,7 @@ def send_to_telegram(text):
     except Exception as e:
         print(f"Ошибка отправки: {e}")
 
-# --- ТВОЁ РЕЗЮМЕ (НЕЙРОСЕТЬ БУДЕТ СРАВНИВАТЬ С НИМ) ---
+# --- ТВОЁ РЕЗЮМЕ ---
 MY_RESUME = """
 Ковыдин Андрей, 36 лет, Москва.
 Senior Project Manager / Delivery Manager (Digital / Banking / IT).
@@ -36,52 +36,67 @@ Senior Project Manager / Delivery Manager (Digital / Banking / IT).
 Результаты: рост конверсии на 30%, запуск 100+ A/B-тестов.
 """
 
-# --- ФУНКЦИЯ: СОБИРАЕМ ВСЕ ВАКАНСИИ С HEADHUNTER (RSS) ---
-def get_all_vacancies():
-    queries = [
-        "Руководитель+проектов",
-        "Project+Manager",
-        "Менеджер+проектов"
-    ]
+# --- ПАРСИНГ HEADHUNTER (С ЭМУЛЯЦИЕЙ ЧЕЛОВЕКА) ---
+def get_vacancies_from_hh(query):
+    url = f"https://hh.ru/search/vacancy?text={query}&area=1"
     
-    all_vacancies = []
-    seen_links = set()
+    # Заголовки как у обычного браузера
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+    }
     
-    for query in queries:
-        rss_url = f"https://hh.ru/rss/search/vacancy?text={query}&area=1&search_period=3"
-        try:
-            feed = feedparser.parse(rss_url)
-            if not feed.entries:
+    try:
+        # Имитация реального пользователя
+        session = requests.Session()
+        session.headers.update(headers)
+        
+        # Первый запрос — как человек открывает сайт
+        response = session.get(url, timeout=20)
+        
+        if response.status_code != 200:
+            send_to_telegram(f"⚠️ Ошибка доступа к HeadHunter (статус: {response.status_code})")
+            return []
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        vacancies = []
+        
+        # Ищем все блоки с вакансиями
+        items = soup.find_all('div', class_='vacancy-serp-item-body')
+        if not items:
+            items = soup.find_all('div', class_='vacancy-serp-item')
+        
+        for item in items:
+            # Название и ссылка
+            link_tag = item.find('a', class_='bloko-link')
+            if not link_tag:
                 continue
             
-            for entry in feed.entries:
-                link = entry.link
-                if link in seen_links:
-                    continue  # Пропускаем дубли в рамках одного поиска
-                seen_links.add(link)
-                
-                title = entry.title
-                summary = entry.summary if hasattr(entry, 'summary') else ""
-                company = "Не указана"
-                if "в" in title:
-                    parts = title.split("в")
-                    if len(parts) > 1:
-                        company = parts[-1].strip()
-                
-                all_vacancies.append({
-                    'title': title,
-                    'link': link,
-                    'company': company,
-                    'summary': summary
-                })
-            time.sleep(1)  # Пауза между запросами
-        except Exception as e:
-            send_to_telegram(f"⚠️ Ошибка при запросе '{query}': {str(e)}")
-    
-    send_to_telegram(f"📊 Найдено вакансий (без дублей): {len(all_vacancies)}")
-    return all_vacancies
+            title = link_tag.text.strip()
+            link = link_tag.get('href')
+            if link and '/vacancy/' in link:
+                full_link = 'https://hh.ru' + link if link.startswith('/') else link
+            else:
+                continue
+            
+            # Компания
+            company_tag = item.find('a', class_='bloko-link bloko-link_kind-tertiary')
+            company = company_tag.text.strip() if company_tag else "Не указана"
+            
+            vacancies.append({
+                'title': title,
+                'link': full_link,
+                'company': company
+            })
+        
+        return vacancies
+        
+    except Exception as e:
+        send_to_telegram(f"❌ Ошибка: {str(e)}")
+        return []
 
-# --- ФУНКЦИЯ: АНАЛИЗ ЧЕРЕЗ НЕЙРОСЕТЬ (GROQ) ---
+# --- АНАЛИЗ ВАКАНСИЙ ЧЕРЕЗ НЕЙРОСЕТЬ ---
 def analyze_vacancy(vacancy_text):
     prompt = f"""
 Ты — эксперт по подбору персонала в IT и банковском секторе.
@@ -118,22 +133,39 @@ def analyze_vacancy(vacancy_text):
     except Exception as e:
         return 0
 
-# --- ГЛАВНАЯ ФУНКЦИЯ: ПРОВЕРКА И ОТПРАВКА ---
+# --- ОСНОВНАЯ ФУНКЦИЯ ---
 def check_vacancies():
-    send_to_telegram("🧠 Запускаю сканирование HeadHunter...")
+    send_to_telegram("🧠 Запускаю поиск на HeadHunter...")
     
-    # 1. Получаем все вакансии
-    vacancies = get_all_vacancies()
-    if not vacancies:
-        send_to_telegram("⚠️ Вакансии не найдены. Проверь подключение.")
+    queries = [
+        "Руководитель+проектов",
+        "Project+Manager",
+        "Менеджер+проектов"
+    ]
+    
+    all_vacancies = []
+    seen_links = set()
+    
+    for query in queries:
+        vacancies = get_vacancies_from_hh(query)
+        
+        for vac in vacancies:
+            if vac['link'] in seen_links:
+                continue
+            seen_links.add(vac['link'])
+            all_vacancies.append(vac)
+        
+        time.sleep(3)  # Большая пауза между запросами
+    
+    if not all_vacancies:
+        send_to_telegram("⚠️ Вакансии не найдены. Проверь доступ к сайту.")
         return
     
-    # 2. Анализируем каждую
-    matched = []
-    total = len(vacancies)
+    send_to_telegram(f"📊 Найдено {len(all_vacancies)} вакансий (без дублей)")
     
-    for idx, vac in enumerate(vacancies, 1):
-        vacancy_text = f"{vac['title']} {vac['company']} {vac['summary']}"
+    matched = []
+    for vac in all_vacancies:
+        vacancy_text = f"{vac['title']} {vac['company']}"
         match_percent = analyze_vacancy(vacancy_text)
         
         if match_percent >= 70:
@@ -144,25 +176,20 @@ def check_vacancies():
                 'match': match_percent
             })
         
-        # Отправляем статус каждые 10 вакансий
-        if idx % 10 == 0:
-            send_to_telegram(f"⏳ Обработано {idx} из {total} вакансий...")
-        
-        time.sleep(0.5)  # Пауза, чтобы не перегружать API
+        time.sleep(1)
     
-    # 3. Сортируем и отправляем результат
     if matched:
         matched.sort(key=lambda x: x['match'], reverse=True)
-        message = f"🔔 Найдено {len(matched)} вакансий с совпадением ≥ 70%:\n\n"
+        message = f"🔔 Найдено {len(matched)} вакансий (≥ 70%):\n\n"
         for item in matched:
             message += f"• {item['match']}% — {item['title']}\n"
             message += f"  {item['company']}\n"
             message += f"  {item['link']}\n\n"
         send_to_telegram(message)
     else:
-        send_to_telegram("⚠️ Не найдено вакансий с совпадением 70% и выше.")
+        send_to_telegram("⚠️ Вакансий с совпадением ≥ 70% не найдено.")
 
-# --- ВЕБХУК ДЛЯ TELEGRAM ---
+# --- ВЕБХУК ---
 @app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
     update = request.get_json()
@@ -176,7 +203,6 @@ def webhook():
 
 # --- ЗАПУСК ---
 if __name__ == "__main__":
-    # Установка вебхука
     webhook_url = f"https://voice-diary-bot.onrender.com/{TELEGRAM_TOKEN}"
     set_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}"
     try:
@@ -185,7 +211,6 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Ошибка webhook: {e}")
     
-    # Планировщик (каждый час с 9 до 18 в будни)
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         check_vacancies,
@@ -195,6 +220,5 @@ if __name__ == "__main__":
     scheduler.start()
     print("✅ Планировщик запущен")
     
-    # Запуск Flask
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
