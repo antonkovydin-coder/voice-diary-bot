@@ -18,6 +18,17 @@ MY_CHAT_ID = "947067613"
 
 app = Flask(__name__)
 
+# --- ОБЩАЯ СЕССИЯ ДЛЯ ЗАПРОСОВ (ЭМУЛЯЦИЯ БРАУЗЕРА) ---
+session = requests.Session()
+session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
+})
+
 # --- ФУНКЦИЯ ДЛЯ ОТПРАВКИ СООБЩЕНИЙ ---
 def send_to_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -27,7 +38,7 @@ def send_to_telegram(text):
     except Exception as e:
         print(f"Ошибка отправки: {e}")
 
-# --- ТВОЁ РЕЗЮМЕ (ДЛЯ АНАЛИЗА) ---
+# --- ТВОЁ РЕЗЮМЕ ---
 MY_RESUME = """
 Ковыдин Андрей, 36 лет, Москва.
 Senior Project Manager / Delivery Manager (Digital / Banking / IT).
@@ -37,36 +48,42 @@ Senior Project Manager / Delivery Manager (Digital / Banking / IT).
 Результаты: рост конверсии на 30%, запуск 100+ A/B-тестов.
 """
 
-# --- ПОЛУЧЕНИЕ ДАННЫХ ПРЯМО СО СТРАНИЦЫ ПОИСКА (С ЭМУЛЯЦИЕЙ БРАУЗЕРА) ---
+# --- ПОЛУЧЕНИЕ ВАКАНСИЙ С HEADHUNTER (С ЭМУЛЯЦИЕЙ БРАУЗЕРА) ---
 def get_vacancies_from_hh():
-    url = "https://hh.ru/search/vacancy?text=Project+Manager&area=1"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
+    url = "https://hh.ru/search/vacancy?text=Project+Manager&area=1&search_period=3"
+    
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        # Отправляем запрос через сессию
+        response = session.get(url, timeout=15)
         
-        # Если доступ запрещен, пробуем альтернативный адрес
+        # Проверяем статус ответа
         if response.status_code == 403:
-            send_to_telegram("⚠️ Доступ запрещен (403). Пробую запасной вариант...")
-            url = "https://hh.ru/search/vacancy?text=Project+Manager"
-            response = requests.get(url, headers=headers, timeout=15)
+            send_to_telegram("⚠️ Доступ запрещен (403). Пробую альтернативный метод...")
+            # Пробуем без параметра search_period
+            url = "https://hh.ru/search/vacancy?text=Project+Manager&area=1"
+            response = session.get(url, timeout=15)
         
         if response.status_code != 200:
             send_to_telegram(f"⚠️ Ошибка загрузки страницы: статус {response.status_code}")
             return []
-
+        
+        # Парсим страницу
         soup = BeautifulSoup(response.text, 'html.parser')
         vacancies = []
         
-        # Ищем блоки с вакансиями
+        # Ищем блоки с вакансиями (основной способ)
         items = soup.find_all('div', class_='vacancy-serp-item-body')
+        
+        # Если не нашли по основному классу, пробуем альтернативный
         if not items:
-            # Пробуем найти блоки по другому классу
             items = soup.find_all('div', class_='vacancy-serp-item')
         
+        if not items:
+            send_to_telegram("⚠️ Не удалось найти блоки с вакансиями на странице.")
+            return []
+        
         for item in items:
-            # Ищем ссылку
+            # Ищем ссылку на вакансию
             link_tag = item.find('a', class_='bloko-link')
             if not link_tag:
                 continue
@@ -88,14 +105,20 @@ def get_vacancies_from_hh():
                 'company': company
             })
         
-        send_to_telegram(f"✅ Получено {len(vacancies)} вакансий с сайта.")
+        send_to_telegram(f"✅ Успешно получено {len(vacancies)} вакансий.")
         return vacancies
         
+    except requests.exceptions.Timeout:
+        send_to_telegram("❌ Ошибка: Превышено время ожидания ответа от HeadHunter.")
+        return []
+    except requests.exceptions.ConnectionError:
+        send_to_telegram("❌ Ошибка: Не удалось установить соединение с HeadHunter.")
+        return []
     except Exception as e:
-        send_to_telegram(f"❌ Ошибка получения данных: {str(e)}")
+        send_to_telegram(f"❌ Непредвиденная ошибка: {str(e)}")
         return []
 
-# --- АНАЛИЗ ВАКАНСИЙ ЧЕРЕЗ GROQ (ФИЛЬТР ПО СОВПАДЕНИЮ) ---
+# --- АНАЛИЗ ВАКАНСИЙ (БЕЗ ИЗМЕНЕНИЙ) ---
 def analyze_vacancy(vacancy_text):
     prompt = f"""
 Ты — эксперт по подбору персонала в IT и банковском секторе.
@@ -107,7 +130,7 @@ def analyze_vacancy(vacancy_text):
 ### ТЕКСТ ВАКАНСИИ:
 {vacancy_text}
 
-Оцени по критериям: опыт, навыки, достижения, стек, soft skills.
+Оцени по 5 критериям: опыт, навыки, достижения, стек, soft skills.
 Ответь строго в формате: "Совпадение: X%", где X — число от 0 до 100.
 """
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -183,6 +206,7 @@ def webhook():
 
 # --- ЗАПУСК ---
 if __name__ == "__main__":
+    # Установка вебхука
     webhook_url = f"https://voice-diary-bot.onrender.com/{TELEGRAM_TOKEN}"
     set_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={webhook_url}"
     try:
@@ -191,6 +215,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Ошибка webhook: {e}")
     
+    # Планировщик
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         check_vacancies,
@@ -200,5 +225,6 @@ if __name__ == "__main__":
     scheduler.start()
     print("✅ Планировщик запущен")
     
+    # Запуск Flask
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
