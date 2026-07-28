@@ -1,5 +1,4 @@
 flask
 requests
-edge-tts
 apscheduler
-beautifulsoup4
+feedparser
